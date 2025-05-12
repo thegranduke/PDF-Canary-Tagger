@@ -1,1 +1,1 @@
-# PDF-Canary-Tagger
+# PDF-Tagger
