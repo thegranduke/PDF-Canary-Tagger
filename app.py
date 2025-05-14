@@ -55,14 +55,15 @@ def upload():
 @app.route("/track.png")
 def track():
     pdf_id = request.args.get("id")
-    ip = request.remote_addr
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     timestamp = datetime.utcnow().isoformat()
     ua = request.headers.get('User-Agent')
-    print(f"[TRACKED] IP: {ip}, TIME: {timestamp}, UA: {ua}, ID: {pdf_id}")
+    location = get_location_from_ip(ip)
+    print(f"[TRACKED] LOC: {location}, TIME: {timestamp}, UA: {ua}, ID: {pdf_id}")
     
     data = pdf_map.get(pdf_id)
     if data:
-        send_tracking_email(ip, timestamp, ua, data["email"],data["filename"])
+        send_tracking_email(ip, timestamp, ua, data["email"],data["filename"],location)
     
     img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))  # Transparent PNG
     buffer = BytesIO()
@@ -84,7 +85,8 @@ def embed_beacon(filepath, beacon_url):
     with open(filepath, "wb") as f:
         f.write(buffer.getvalue())
 
-def send_tracking_email(ip, timestamp, ua, recipient_email,filename):
+def send_tracking_email(ip, timestamp, ua, recipient_email,filename,location):
+    loc_str = f"{location['city']}, {location['region']}, {location['country']}"
     try:
         email = resend.Emails.send({
             "from": os.getenv("RESEND_EMAIL_FROM"),
@@ -94,6 +96,7 @@ def send_tracking_email(ip, timestamp, ua, recipient_email,filename):
                 <p>Someone opened your tagged PDF filename: {filename}.</p>
                 <ul>
                     <li><strong>IP Address:</strong> {ip}</li>
+                    <li><strong>Location:</strong> {loc_str}</li>
                     <li><strong>Time:</strong> {timestamp}</li>
                     <li><strong>User Agent:</strong> {ua}</li>
                 </ul>
@@ -102,6 +105,20 @@ def send_tracking_email(ip, timestamp, ua, recipient_email,filename):
         print("✅ Email sent:", email)
     except Exception as e:
         print("❌ Error sending email:", e)
+
+def get_location_from_ip(ip):
+    try:
+        response = request.get(f"https://ipinfo.io/{ip}/json")
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "city": data.get("city", ""),
+                "region": data.get("region", ""),
+                "country": data.get("country", "")
+            }
+    except Exception:
+        pass
+    return {"city": "", "region": "", "country": ""}
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
