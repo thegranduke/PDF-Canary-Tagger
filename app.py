@@ -1,14 +1,24 @@
 from flask import Flask, render_template, request, send_file
 import os
+import resend
+import uuid
 from datetime import datetime
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from PIL import Image
 
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Set the Resend API key
+resend.api_key = os.getenv("RESEND_API_KEY")
+
 app = Flask(__name__)
 
-# Beacon URL
-BEACON_URL = "http://127.0.0.1:5000/track.png"
+# In-memory store mapping PDF ID to metadata
+pdf_map = {}
 
 @app.route("/")
 def index():
@@ -17,24 +27,43 @@ def index():
 @app.route("/upload", methods=["POST"])
 def upload():
     file = request.files.get('pdf')
+    email = request.form.get('email')
+
     if file and file.filename.endswith('.pdf'):
         # Save uploaded file (optional if you want to archive originals)
         filepath = os.path.join("uploaded_files", file.filename)
         os.makedirs("uploaded_files", exist_ok=True)
         file.save(filepath)
 
+        # Generate a unique ID for this file
+        pdf_id = str(uuid.uuid4())
+
+        beacon_url = f"http://127.0.0.1:5000/track.png?id={pdf_id}"
+
+        # Store the association between ID and metadata
+        pdf_map[pdf_id] = {
+            "email": email,
+            "filename": file.filename
+        }
+
         # Generate tagged PDF
-        embed_beacon(filepath, BEACON_URL)
+        embed_beacon(filepath, beacon_url)
 
         return send_file(filepath, as_attachment=True)
     return "Invalid file. Please upload a PDF."
 
 @app.route("/track.png")
 def track():
+    pdf_id = request.args.get("id")
     ip = request.remote_addr
     timestamp = datetime.utcnow().isoformat()
     ua = request.headers.get('User-Agent')
-    print(f"[TRACKED] IP: {ip}, TIME: {timestamp}, UA: {ua}")
+    print(f"[TRACKED] IP: {ip}, TIME: {timestamp}, UA: {ua}, ID: {pdf_id}")
+    
+    data = pdf_map.get(pdf_id)
+    if data:
+        send_tracking_email(ip, timestamp, ua, data["email"],data["filename"])
+    
     img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))  # Transparent PNG
     buffer = BytesIO()
     img.save(buffer, format="PNG")
@@ -54,6 +83,25 @@ def embed_beacon(filepath, beacon_url):
     c.save()
     with open(filepath, "wb") as f:
         f.write(buffer.getvalue())
+
+def send_tracking_email(ip, timestamp, ua, recipient_email,filename):
+    try:
+        email = resend.Emails.send({
+            "from": os.getenv("RESEND_EMAIL_FROM"),
+            "to": recipient_email,  # Replace with your recipient email
+            "subject": "📍 PDF Opened",
+            "html": f"""
+                <p>Someone opened your tagged PDF filename: {filename}.</p>
+                <ul>
+                    <li><strong>IP Address:</strong> {ip}</li>
+                    <li><strong>Time:</strong> {timestamp}</li>
+                    <li><strong>User Agent:</strong> {ua}</li>
+                </ul>
+            """
+        })
+        print("✅ Email sent:", email)
+    except Exception as e:
+        print("❌ Error sending email:", e)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
