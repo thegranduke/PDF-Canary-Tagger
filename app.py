@@ -2,10 +2,12 @@ from flask import Flask, render_template, request, send_file
 import os
 import resend
 import uuid
+import requests
 from datetime import datetime
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from PIL import Image
+from PyPDF2 import PdfReader, PdfWriter
 
 from dotenv import load_dotenv
 
@@ -73,17 +75,41 @@ def track():
 
 
 def embed_beacon(filepath, beacon_url):
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer)
+    # Read the original PDF
+    original_pdf = PdfReader(filepath)
+    output = PdfWriter()
 
-    # Draw the beacon image (loads remotely on PDF open)
-    c.drawImage(beacon_url, x=0, y=0, width=1, height=1, mask='auto')
-
-    # c.drawString(100, 750, "This PDF is tagged with a beacon.")
-
+    # Get the first page
+    first_page = original_pdf.pages[0]
+    
+    # Create a tiny PDF with the beacon
+    beacon_buffer = BytesIO()
+    c = canvas.Canvas(beacon_buffer)
+    
+    # Get page dimensions from first page
+    page_width = float(first_page.mediabox.width)
+    page_height = float(first_page.mediabox.height)
+    
+    # Place the 1x1 beacon at the bottom-right corner, nearly invisible
+    c.drawImage(beacon_url, x=page_width-2, y=1, width=1, height=1, mask='auto')
     c.save()
-    with open(filepath, "wb") as f:
-        f.write(buffer.getvalue())
+    beacon_buffer.seek(0)
+    
+    # Create PDF from the beacon
+    beacon_pdf = PdfReader(beacon_buffer)
+    beacon_page = beacon_pdf.pages[0]
+    
+    # Merge the beacon onto the first page
+    first_page.merge_page(beacon_page)
+    output.add_page(first_page)
+    
+    # Add all remaining pages unchanged
+    for page in original_pdf.pages[1:]:
+        output.add_page(page)
+
+    # Write the final PDF
+    with open(filepath, "wb") as output_file:
+        output.write(output_file)
 
 def send_tracking_email(ip, timestamp, ua, recipient_email,filename,location):
     loc_str = f"{location['city']}, {location['region']}, {location['country']}"
@@ -108,7 +134,7 @@ def send_tracking_email(ip, timestamp, ua, recipient_email,filename,location):
 
 def get_location_from_ip(ip):
     try:
-        response = request.get(f"https://ipinfo.io/{ip}/json")
+        response = requests.get(f"https://ipinfo.io/{ip}/json")
         if response.status_code == 200:
             data = response.json()
             return {
